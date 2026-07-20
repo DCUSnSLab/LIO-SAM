@@ -1,6 +1,8 @@
 #include "utility.hpp"
 #include "lio_sam/msg/cloud_info.hpp"
 
+#include <chrono>
+
 struct VelodynePointXYZIRT
 {
     PCL_ADD_POINT4D
@@ -48,6 +50,8 @@ private:
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubExtractedCloud;
     rclcpp::Publisher<lio_sam::msg::CloudInfo>::SharedPtr pubLaserCloudInfo;
+    rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pubCycleTime;
+    bool profileTimings = false;
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr subImu;
     rclcpp::CallbackGroup::SharedPtr callbackGroupImu;
@@ -126,6 +130,9 @@ public:
             "lio_sam/deskew/cloud_deskewed", 1);
         pubLaserCloudInfo = create_publisher<lio_sam::msg::CloudInfo>(
             "lio_sam/deskew/cloud_info", qos);
+        profileTimings = declare_parameter<bool>("profile_timings", false);
+        pubCycleTime = create_publisher<std_msgs::msg::Float64MultiArray>(
+            "/scv/timing/lio_image_projection_ms", qos);
 
         allocateMemory();
         resetParameters();
@@ -207,6 +214,7 @@ public:
 
     void cloudHandler(const sensor_msgs::msg::PointCloud2::SharedPtr laserCloudMsg)
     {
+        const auto cycleStart = std::chrono::steady_clock::now();
         if (!cachePointCloud(laserCloudMsg))
             return;
 
@@ -220,6 +228,16 @@ public:
         publishClouds();
 
         resetParameters();
+
+        if (profileTimings)
+        {
+            std_msgs::msg::Float64MultiArray timing;
+            timing.data = {
+                stamp2Sec(cloudHeader.stamp),
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - cycleStart).count()};
+            pubCycleTime->publish(timing);
+        }
     }
 
     bool cachePointCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& laserCloudMsg)

@@ -278,14 +278,15 @@ public:
             rclcpp::shutdown();
         }
 
-        // get timestamp
-        cloudHeader = currentCloudMsg.header;
-        timeScanCur = stamp2Sec(cloudHeader.stamp);
-        timeScanEnd = timeScanCur + laserCloudIn->points.back().time;
-    
         // remove Nan
         vector<int> indices;
         pcl::removeNaNFromPointCloud(*laserCloudIn, *laserCloudIn, indices);
+
+        if (laserCloudIn->empty())
+        {
+            RCLCPP_WARN(get_logger(), "Received an empty point cloud, skipping scan.");
+            return false;
+        }
 
         // check dense flag
         if (laserCloudIn->is_dense == false)
@@ -332,6 +333,35 @@ public:
             }
             if (deskewFlag == -1)
                 RCLCPP_WARN(get_logger(), "Point cloud timestamp not available, deskew function disabled, system will drift significantly!");
+        }
+
+        cloudHeader = currentCloudMsg.header;
+        timeScanCur = stamp2Sec(cloudHeader.stamp);
+        timeScanEnd = timeScanCur;
+
+        if (deskewFlag == 1)
+        {
+            const auto timeBounds = std::minmax_element(
+                laserCloudIn->points.begin(), laserCloudIn->points.end(),
+                [](const auto& lhs, const auto& rhs) {
+                    return lhs.time < rhs.time;
+                });
+            const double minPointTime = timeBounds.first->time;
+            const double maxPointTime = timeBounds.second->time;
+
+            // Canonicalize end-relative driver offsets to LIO-SAM's scan-start convention.
+            const auto scanStart = rclcpp::Time(cloudHeader.stamp)
+                + rclcpp::Duration::from_seconds(minPointTime);
+            cloudHeader.stamp = scanStart;
+            timeScanCur = stamp2Sec(cloudHeader.stamp);
+            timeScanEnd = timeScanCur + (maxPointTime - minPointTime);
+            for (auto& point : laserCloudIn->points)
+                point.time -= minPointTime;
+
+            RCLCPP_INFO_ONCE(
+                get_logger(),
+                "Point time normalized: raw=[%.6f, %.6f] s, scan duration=%.6f s.",
+                minPointTime, maxPointTime, maxPointTime - minPointTime);
         }
 
         return true;
